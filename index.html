@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>NKids — Prototype</title>
+  <style>
+    /* Minimal CSS : responsive, simple look */
+    body{font-family:Inter,system-ui,Arial;margin:0;background:#0f1724;color:#e6eef8;display:flex;min-height:100vh;align-items:stretch}
+    #sidebar{width:320px;background:#0b1220;padding:18px;box-shadow:2px 0 20px rgba(0,0,0,.4)}
+    #main{flex:1;padding:18px}
+    button{cursor:pointer;padding:8px 12px;border-radius:8px;border:0;background:#2563eb;color:white}
+    .card{background:#071026;padding:12px;border-radius:10px;margin-bottom:12px}
+    input,select{padding:8px;border-radius:8px;border:1px solid #223045;background:#071026;color:#e6eef8;width:100%}
+    .msg{padding:8px;border-radius:8px;margin-bottom:6px;background:#07203a}
+    .meta{font-size:12px;opacity:.7}
+    .small{font-size:13px;color:#9fb3d6}
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <h2>NKids 👶 — Prototype</h2>
+    <div id="userArea" class="card">
+      <div id="signedOut">
+        <p class="small">Connecte-toi avec Google</p>
+        <button id="googleSignBtn">Se connecter (Google)</button>
+        <p class="small">ou jouer en invité</p>
+        <button id="anonBtn">Invité</button>
+      </div>
+      <div id="signedIn" style="display:none">
+        <p id="userName"></p>
+        <p class="small">Âge déclaré: <span id="userAge">—</span></p>
+        <button id="signOutBtn">Se déconnecter</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Créer serveur</h3>
+      <input id="serverName" placeholder="Nom du serveur (ex: Super Kids)" />
+      <select id="serverVisibility"><option value="public">Public</option><option value="private">Privé</option></select>
+      <div style="height:8px"></div>
+      <button id="createServerBtn">Créer (nécessite validation parent si <13)</button>
+      <p id="serverMsg" class="small"></p>
+    </div>
+
+    <div class="card">
+      <h3>Contrôle parental</h3>
+      <p class="small">Si utilisateur <13 → envoie un e-mail parent pour validation.</p>
+      <input id="parentEmail" placeholder="Email du parent (pour validation)" />
+      <button id="sendParentCodeBtn">Envoyer code parent</button>
+      <p id="parentInfo" class="small"></p>
+    </div>
+
+    <div class="card">
+      <h3>Nitro gratuit</h3>
+      <p class="small">Badge NKids Nitro activé ✅</p>
+      <button id="enableNitro">Activer Nitro (gratuit)</button>
+    </div>
+  </div>
+
+  <div id="main">
+    <div class="card">
+      <h3>Salon: #general</h3>
+      <div id="messages" style="height:320px;overflow:auto;background:#041328;padding:10px;border-radius:8px;margin-bottom:8px"></div>
+      <div style="display:flex;gap:8px">
+        <input id="messageInput" placeholder="Écrire un message..." />
+        <button id="sendBtn">Envoyer</button>
+      </div>
+    </div>
+    <div id="log" class="small"></div>
+  </div>
+
+  <!-- Firebase SDKs (CDN) -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+
+  <script>
+    // ======= REMPLACE TA CONFIG ICI (depuis la console Firebase) =======
+    const firebaseConfig = {
+      apiKey: "REPLACE_ME",
+      authDomain: "REPLACE_ME.firebaseapp.com",
+      projectId: "REPLACE_ME",
+      // ...
+    };
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const db = firebase.firestore();
+
+    // UI refs
+    const googleSignBtn = document.getElementById('googleSignBtn');
+    const anonBtn = document.getElementById('anonBtn');
+    const signOutBtn = document.getElementById('signOutBtn');
+    const signedIn = document.getElementById('signedIn');
+    const signedOut = document.getElementById('signedOut');
+    const userNameEl = document.getElementById('userName');
+    const userAgeEl = document.getElementById('userAge');
+    const messagesEl = document.getElementById('messages');
+    const sendBtn = document.getElementById('sendBtn');
+    const messageInput = document.getElementById('messageInput');
+    const createServerBtn = document.getElementById('createServerBtn');
+    const serverMsg = document.getElementById('serverMsg');
+    const parentEmail = document.getElementById('parentEmail');
+    const sendParentCodeBtn = document.getElementById('sendParentCodeBtn');
+    const parentInfo = document.getElementById('parentInfo');
+    const enableNitro = document.getElementById('enableNitro');
+
+    let currentUser = null;
+    let currentServer = 'default-server';
+    let currentChannel = 'general';
+
+    // Google sign in
+    googleSignBtn.onclick = async () => {
+      const provider = new firebase.auth.GoogleAuthProvider();
+      try {
+        await auth.signInWithPopup(provider);
+      } catch (e) {
+        alert('Erreur login: '+e.message);
+      }
+    };
+    anonBtn.onclick = async ()=> {
+      const u = await auth.signInAnonymously();
+    };
+    signOutBtn.onclick = ()=> auth.signOut();
+
+    // Auth state
+    auth.onAuthStateChanged(async user => {
+      currentUser = user;
+      if (!user) {
+        signedOut.style.display='block';
+        signedIn.style.display='none';
+        userNameEl.textContent='';
+        return;
+      }
+      signedOut.style.display='none';
+      signedIn.style.display='block';
+      const displayName = user.displayName || 'Invité';
+      userNameEl.textContent = displayName;
+      // read age (we expect clients to set a profile field 'ageDeclared')
+      const userDoc = db.collection('users').doc(user.uid);
+      const snap = await userDoc.get();
+      const data = snap.exists ? snap.data() : {};
+      userAgeEl.textContent = data.ageDeclared || '—';
+      // subscribe to messages
+      subscribeMessages();
+    });
+
+    // Firestore: listen messages
+    function subscribeMessages(){
+      messagesEl.innerHTML='Chargement...';
+      db.collection('servers').doc(currentServer)
+        .collection('channels').doc(currentChannel)
+        .collection('messages')
+        .orderBy('ts','asc').limit(200)
+        .onSnapshot(snap => {
+          messagesEl.innerHTML='';
+          snap.forEach(doc=>{
+            const m = doc.data();
+            const el = document.createElement('div');
+            el.className='msg';
+            el.innerHTML = `<strong>${escapeHtml(m.name||'Anon')}</strong> <div class="meta">${new Date(m.ts?.toMillis()).toLocaleTimeString()}</div><div>${escapeHtml(m.text)}</div>`;
+            messagesEl.appendChild(el);
+          });
+          messagesEl.scrollTop = messagesEl.scrollHeight;
+        });
+    }
+
+    // send message
+    sendBtn.onclick = async ()=>{
+      const text = messageInput.value.trim();
+      if(!text) return;
+      if(!currentUser) { alert('Connecte-toi d\'abord'); return; }
+      const u = currentUser;
+      // basic moderation: block if contains banned words (client side; move to server rules)
+      const banned = ['badword1','badword2'];
+      const low = text.toLowerCase();
+      for(const b of banned) if(low.includes(b)) { alert('Message non autorisé'); return; }
+
+      const payload = {
+        uid: u.uid,
+        name: u.displayName || 'Invité',
+        text,
+        ts: firebase.firestore.FieldValue.serverTimestamp()
+      };
+      await db.collection('servers').doc(currentServer)
+        .collection('channels').doc(currentChannel)
+        .collection('messages').add(payload);
+      messageInput.value='';
+    };
+
+    // Create server (with parental validation check)
+    createServerBtn.onclick = async ()=>{
+      if(!currentUser) return alert('Connecte-toi.');
+      const uid = currentUser.uid;
+      const userDoc = db.collection('users').doc(uid);
+      const snap = await userDoc.get();
+      const data = snap.exists ? snap.data() : {};
+      const age = data.ageDeclared || 99;
+      const name = document.getElementById('serverName').value.trim();
+      if(!name) return serverMsg.textContent='Donne un nom au serveur';
+      if(age < 13 && !data.parentVerified){
+        return serverMsg.textContent = 'Tu dois valider un parent pour créer un serveur.';
+      }
+      // create server doc
+      const srv = await db.collection('servers').add({
+        name, owner: uid, createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      serverMsg.textContent = 'Serveur créé ✅';
+    };
+
+    // Parent verification (simple flow: send code to parent email)
+    sendParentCodeBtn.onclick = async ()=>{
+      const mail = parentEmail.value.trim();
+      if(!mail) return parentInfo.textContent='Entre l\'email du parent';
+      // Ici: en vrai tu dois envoyer un email depuis un backend (Cloud Functions / SendGrid).
+      // Pour prototype on stocke un code temporaire côté client — mais attention : ceci n'est PAS une méthode sécurisée en production.
+      const code = Math.floor(100000 + Math.random()*900000).toString();
+      // Save a pending verification in Firestore
+      await db.collection('parentVerifs').add({
+        childUid: currentUser ? currentUser.uid : null,
+        parentEmail: mail,
+        code,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      parentInfo.textContent = `Code envoyé (prototype) : ${code} — en prod, tu l'enverrais par email via backend.`;
+    };
+
+    enableNitro.onclick = async ()=>{
+      if(!currentUser) return alert('Connecte-toi');
+      // unlock Nitro features: save in user doc
+      await db.collection('users').doc(currentUser.uid).set({nitro:true},{merge:true});
+      alert('Nitro NK activé ✅ (gratuit)');
+    };
+
+    // helper
+    function escapeHtml(s=''){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
+
+  </script>
+</body>
+</html>
